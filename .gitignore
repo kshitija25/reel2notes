@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local data (downloads, generated notes, db later)
+data/
+*.wav
+*.mp4
+*.mp3
+
+# VS Code
+.vscode/
