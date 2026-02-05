@@ -1,8 +1,25 @@
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+
+import db
+
+# --- Fix ffmpeg discovery on Windows (needed by Whisper internally) ---
+# If ffmpeg isn't on PATH in this terminal, add the known WinGet location.
+ffmpeg_exe = shutil.which("ffmpeg")
+if not ffmpeg_exe:
+    ffmpeg_bin = r"C:\Users\kshit\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build\bin"
+    os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + ffmpeg_bin
+    ffmpeg_exe = shutil.which("ffmpeg")
+
+if not ffmpeg_exe:
+    raise RuntimeError(
+        "ffmpeg not found. Open PowerShell and run `where.exe ffmpeg` to locate it, "
+        "then update ffmpeg_bin in test_pipeline.py."
+    )
 
 import whisper
 
@@ -42,14 +59,15 @@ def download_reel(url: str) -> Path:
     return files[0]
 
 
-def extract_audio(video_path: Path) -> Path:
-    if video_path.suffix.lower() == ".wav":
-        return video_path
-    audio_path = video_path.with_suffix(".wav")
-    cmd = f'ffmpeg -y -i "{video_path}" -ar 16000 -ac 1 -c:a pcm_s16le "{audio_path}"'
+def extract_audio(downloaded_path: Path) -> Path:
+    # If yt-dlp already downloaded audio as wav, just use it.
+    if downloaded_path.suffix.lower() == ".wav":
+        return downloaded_path
+
+    audio_path = downloaded_path.with_suffix(".wav")
+    cmd = f'ffmpeg -y -i "{downloaded_path}" -ar 16000 -ac 1 -c:a pcm_s16le "{audio_path}"'
     run(cmd)
     return audio_path
-
 
 
 def transcribe_both(audio_path: Path, model_name: str = DEFAULT_MODEL, language: str = DEFAULT_LANG) -> tuple[str, str]:
@@ -70,11 +88,11 @@ def transcribe_both(audio_path: Path, model_name: str = DEFAULT_MODEL, language:
     return raw, en
 
 
-def write_note(url: str, raw: str, en: str, video_path: Path) -> Path:
+def write_note(url: str, raw: str, en: str, downloaded_path: Path) -> Path:
     NOTES.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    title = slugify(video_path.stem)
+    title = slugify(downloaded_path.stem)
     md_path = NOTES / f"{title}.md"
 
     md = f"""# {title}
@@ -93,14 +111,26 @@ Created: {now}
 
 
 if __name__ == "__main__":
+    db.init_db()
+
     url = input("Paste Instagram Reel URL: ").strip()
 
-    video = download_reel(url)
-    audio = extract_audio(video)
+    downloaded = download_reel(url)
+    audio = extract_audio(downloaded)
+
+    reel_id = db.upsert_reel(
+        url=url,
+        downloaded_path=str(downloaded),
+        audio_path=str(audio),
+        model=DEFAULT_MODEL,
+        language=DEFAULT_LANG,
+    )
 
     raw_text, en_text = transcribe_both(audio, model_name=DEFAULT_MODEL, language=DEFAULT_LANG)
+    db.save_transcripts(reel_id, raw_text, en_text)
 
-    note = write_note(url, raw_text, en_text, video)
+    note = write_note(url, raw_text, en_text, downloaded)
 
     print("Saved note:", note)
-    print("Downloaded video:", video)
+    print("Downloaded media:", downloaded)
+    print("Saved to DB reel_id:", reel_id)
